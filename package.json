@@ -1,0 +1,13 @@
+{
+  "name": "ifood-scraper",
+  "version": "1.0.0",
+  "description": "Scraper Puppeteer para portal iFood",
+  "main": "scraper.js",
+  "scripts": {
+    "start": "node scraper.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "puppeteer": "^21.11.0"
+  }
+}
