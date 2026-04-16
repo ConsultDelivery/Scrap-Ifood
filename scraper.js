@@ -8,247 +8,181 @@ const PORT = process.env.PORT || 3001;
 const IFOOD_EMAIL = process.env.IFOOD_EMAIL;
 const IFOOD_SENHA = process.env.IFOOD_SENHA;
 
-// ─── Utilitários ────────────────────────────────────────────────────────────
+// ─── URLs do portal ────────────────────────────────────────────────────────────
+const URL_LOGIN      = 'https://portal.ifood.com.br/login';
+const URL_DESEMPENHO = 'https://portal.ifood.com.br/performance';
 
-function log(msg) {
-  console.log(`[${new Date().toISOString()}] ${msg}`);
-}
-
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
-}
+// ─── Utilitários ───────────────────────────────────────────────────────────────
+function log(msg) { console.log(`[${new Date().toISOString()}] ${msg}`); }
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function parseMoeda(str) {
   if (!str) return 0;
-  return parseFloat(str.replace(/[R$\s.]/g, '').replace(',', '.')) || 0;
+  return parseFloat(str.replace(/[R$\s]/g, '').replace(/\./g, '').replace(',', '.')) || 0;
 }
-
 function parseInteiro(str) {
   if (!str) return 0;
   return parseInt(str.replace(/\D/g, ''), 10) || 0;
 }
-
 function parseDecimal(str) {
   if (!str) return 0;
   return parseFloat(str.replace(',', '.')) || 0;
 }
 
-// ─── Login ───────────────────────────────────────────────────────────────────
-
-async function fazerLogin(page) {
-  log('Navegando para o portal iFood...');
-  await page.goto('https://restaurant.ifood.com.br/', {
-    waitUntil: 'networkidle2',
-    timeout: 60000,
+// ─── Browser ──────────────────────────────────────────────────────────────────
+async function criarBrowser() {
+  return puppeteer.launch({
+    headless: 'new',
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--window-size=1366,768'],
   });
+}
 
-  // Aceitar cookies se aparecer
+async function criarPagina(browser) {
+  const page = await browser.newPage();
+  await page.setViewport({ width: 1366, height: 768 });
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+  await page.setRequestInterception(true);
+  page.on('request', req => {
+    if (['image', 'font', 'media'].includes(req.resourceType())) req.abort();
+    else req.continue();
+  });
+  return page;
+}
+
+// ─── Login ────────────────────────────────────────────────────────────────────
+async function fazerLogin(page) {
+  log('Acessando portal.ifood.com.br/login...');
+  await page.goto(URL_LOGIN, { waitUntil: 'networkidle2', timeout: 60000 });
+  await sleep(2000);
+
+  // Aceitar cookies
   try {
-    await page.waitForSelector('button[data-testid="cookie-accept"]', { timeout: 5000 });
-    await page.click('button[data-testid="cookie-accept"]');
-    log('Cookies aceitos.');
-  } catch (_) {
-    log('Banner de cookies não encontrado, seguindo...');
-  }
+    const btnCookie = await page.$('#onetrust-accept-btn-handler, [data-testid="cookie-accept-button"]');
+    if (btnCookie) { await btnCookie.click(); await sleep(500); log('Cookies aceitos.'); }
+  } catch (_) {}
 
+  // E-mail
   log('Preenchendo e-mail...');
-  await page.waitForSelector('input[type="email"], input[name="email"], input[placeholder*="mail"]', { timeout: 15000 });
-  await page.type('input[type="email"], input[name="email"], input[placeholder*="mail"]', IFOOD_EMAIL, { delay: 60 });
-  await sleep(500);
+  await page.waitForSelector('input[type="email"], input[name="email"], input[id*="email"]', { timeout: 20000 });
+  const campoEmail = await page.$('input[type="email"], input[name="email"], input[id*="email"]');
+  await campoEmail.click({ clickCount: 3 });
+  await campoEmail.type(IFOOD_EMAIL, { delay: 60 });
+  await sleep(400);
 
-  // Clicar em "Continuar" ou "Próximo"
-  const btnContinuar = await page.$('button[type="submit"], button:has-text("Continuar"), button:has-text("Próximo")');
-  if (btnContinuar) await btnContinuar.click();
+  // Clica em Continuar (pode ser fluxo de 2 etapas)
+  await page.click('button[type="submit"]');
   await sleep(1500);
 
+  // Senha
   log('Preenchendo senha...');
-  await page.waitForSelector('input[type="password"]', { timeout: 15000 });
-  await page.type('input[type="password"]', IFOOD_SENHA, { delay: 60 });
-  await sleep(500);
+  await page.waitForSelector('input[type="password"]', { timeout: 20000 });
+  const campoSenha = await page.$('input[type="password"]');
+  await campoSenha.click({ clickCount: 3 });
+  await campoSenha.type(IFOOD_SENHA, { delay: 60 });
+  await sleep(400);
 
   await page.click('button[type="submit"]');
-  log('Aguardando autenticação...');
-  await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
-  log('Login realizado com sucesso.');
+  log('Aguardando pós-login...');
+
+  await page.waitForFunction(() => !window.location.href.includes('/login'), { timeout: 30000 });
+  log(`Login OK — ${page.url()}`);
 }
 
-// ─── Coleta de dados ─────────────────────────────────────────────────────────
+// ─── Coleta de dados ──────────────────────────────────────────────────────────
+async function coletarDesempenho(page, date) {
+  // Tenta carregar com filtro de data na URL
+  const urlComData = `${URL_DESEMPENHO}?startDate=${date}&endDate=${date}`;
+  log(`Navegando para: ${urlComData}`);
+  await page.goto(urlComData, { waitUntil: 'networkidle2', timeout: 60000 });
+  await sleep(4000);
 
-async function coletarDados(page, date) {
-  log(`Coletando dados para a data: ${date}`);
-
-  // Navegar para a seção de relatórios/resumo
-  await page.goto('https://restaurant.ifood.com.br/report', {
-    waitUntil: 'networkidle2',
-    timeout: 60000,
-  });
-  await sleep(2000);
-
-  // Tentar definir o período via URL ou seletor de data
-  // O portal iFood usa parâmetros de data ou datepicker
+  // Tenta aplicar datepicker se disponível
   try {
-    // Tenta setar a data no datepicker
     const [ano, mes, dia] = date.split('-');
-    const dataFormatada = `${dia}/${mes}/${ano}`;
-
-    // Procura o campo de data inicial e final
-    const camposData = await page.$$('input[type="date"], input[placeholder*="Data"], input[placeholder*="data"]');
-    if (camposData.length >= 1) {
-      await camposData[0].triple_click?.();
-      await camposData[0].click({ clickCount: 3 });
-      await camposData[0].type(dataFormatada, { delay: 50 });
+    const dataFormatadaBR = `${dia}/${mes}/${ano}`;
+    const inputs = await page.$$('[class*="datepicker"] input, [class*="DatePicker"] input, [class*="date-picker"] input');
+    for (const input of inputs.slice(0, 2)) {
+      await input.click({ clickCount: 3 });
+      await input.type(dataFormatadaBR, { delay: 50 });
+      await sleep(300);
     }
-    if (camposData.length >= 2) {
-      await camposData[1].click({ clickCount: 3 });
-      await camposData[1].type(dataFormatada, { delay: 50 });
+    if (inputs.length > 0) {
+      await page.keyboard.press('Enter');
+      await sleep(2500);
     }
-
-    // Confirmar filtro
-    const btnFiltrar = await page.$('button:has-text("Filtrar"), button:has-text("Aplicar"), button:has-text("Buscar")');
-    if (btnFiltrar) {
-      await btnFiltrar.click();
-      await sleep(3000);
-    }
-    log('Filtro de data aplicado.');
-  } catch (e) {
-    log(`Aviso ao aplicar filtro de data: ${e.message}`);
-  }
+  } catch (e) { log(`Aviso datepicker: ${e.message}`); }
 
   await sleep(2000);
 
-  // ── Extração dos indicadores ──────────────────────────────────────────────
-  const dados = await page.evaluate(() => {
-    function texto(seletor) {
-      const el = document.querySelector(seletor);
-      return el ? el.innerText.trim() : '';
+  // Extração de métricas
+  const metricas = await page.evaluate(() => {
+    function pegar(seletores) {
+      for (const sel of seletores) {
+        const el = document.querySelector(sel);
+        if (el && el.innerText.trim()) return el.innerText.trim();
+      }
+      return '';
     }
 
-    // Tenta múltiplos seletores para cada métrica
-    // (o portal pode variar entre versões)
-    const pedidosTotal = texto('[data-testid="total-orders"]')
-      || texto('.orders-count')
-      || texto('[class*="ordersCount"]')
-      || texto('[class*="total-orders"]')
-      || '';
+    // Captura todos os cards para debug
+    const cards = Array.from(document.querySelectorAll(
+      '[class*="card"], [class*="Card"], [class*="metric"], [class*="Metric"], [class*="kpi"], [class*="summary"]'
+    )).map(el => el.innerText?.trim()).filter(t => t && t.length < 200).slice(0, 30);
 
-    const faturamento = texto('[data-testid="total-revenue"]')
-      || texto('.revenue-amount')
-      || texto('[class*="totalRevenue"]')
-      || texto('[class*="gross-revenue"]')
-      || '';
-
-    const ticketMedio = texto('[data-testid="average-ticket"]')
-      || texto('.average-ticket')
-      || texto('[class*="averageTicket"]')
-      || '';
-
-    const cancelamentos = texto('[data-testid="canceled-orders"]')
-      || texto('.canceled-orders')
-      || texto('[class*="canceledOrders"]')
-      || '';
-
-    const avaliacaoMedia = texto('[data-testid="rating-average"]')
-      || texto('.rating-average')
-      || texto('[class*="ratingAverage"]')
-      || texto('[class*="averageRating"]')
-      || '';
-
-    return { pedidosTotal, faturamento, ticketMedio, cancelamentos, avaliacaoMedia };
+    return {
+      pedidosTotal: pegar(['[data-testid="orders-count"]','[data-testid="total-orders"]','[class*="ordersCount"]','[class*="orders-count"]','[class*="totalOrders"]']),
+      faturamento:  pegar(['[data-testid="revenue"]','[data-testid="gross-revenue"]','[data-testid="total-revenue"]','[class*="grossRevenue"]','[class*="totalRevenue"]','[class*="revenue"]']),
+      ticketMedio:  pegar(['[data-testid="average-ticket"]','[data-testid="ticket-medium"]','[class*="averageTicket"]','[class*="average-ticket"]']),
+      cancelamentos:pegar(['[data-testid="canceled"]','[data-testid="cancellations"]','[class*="canceled"]','[class*="cancellations"]']),
+      avaliacaoMedia:pegar(['[data-testid="rating"]','[data-testid="average-rating"]','[class*="averageRating"]','[class*="rating"]']),
+      _cards: cards,
+    };
   });
 
-  log(`Dados brutos extraídos: ${JSON.stringify(dados)}`);
-
-  const resultado = {
-    data_referencia: date,
-    pedidos_total: parseInteiro(dados.pedidosTotal),
-    faturamento: parseMoeda(dados.faturamento),
-    ticket_medio: parseMoeda(dados.ticketMedio),
-    cancelamentos: parseInteiro(dados.cancelamentos),
-    avaliacao_media: parseDecimal(dados.avaliacaoMedia),
-    coletado_em: new Date().toISOString(),
-  };
-
-  // Calcula ticket médio se não veio direto
-  if (resultado.ticket_medio === 0 && resultado.pedidos_total > 0) {
-    resultado.ticket_medio = parseFloat(
-      (resultado.faturamento / resultado.pedidos_total).toFixed(2)
-    );
-  }
-
-  log(`Dados processados: ${JSON.stringify(resultado)}`);
-  return resultado;
+  log(`Métricas brutas extraídas: ${JSON.stringify(metricas)}`);
+  return metricas;
 }
 
-// ─── Endpoint principal ───────────────────────────────────────────────────────
-
+// ─── Endpoint /scrape ─────────────────────────────────────────────────────────
 app.post('/scrape', async (req, res) => {
   const { date } = req.body;
+  if (!date) return res.status(400).json({ error: 'Campo "date" é obrigatório (formato: yyyy-MM-dd)' });
+  if (!IFOOD_EMAIL || !IFOOD_SENHA) return res.status(500).json({ error: 'IFOOD_EMAIL e IFOOD_SENHA não configurados' });
 
-  if (!date) {
-    return res.status(400).json({ error: 'Campo "date" é obrigatório (formato: yyyy-MM-dd)' });
-  }
-  if (!IFOOD_EMAIL || !IFOOD_SENHA) {
-    return res.status(500).json({ error: 'Variáveis IFOOD_EMAIL e IFOOD_SENHA não configuradas' });
-  }
-
-  log(`Iniciando scrape para: ${date}`);
-
+  log(`Iniciando scrape — ${date}`);
   let browser;
   try {
-    browser = await puppeteer.launch({
-      headless: 'new',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--window-size=1366,768',
-      ],
-    });
-
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1366, height: 768 });
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    );
-
-    // Bloquear assets desnecessários para acelerar
-    await page.setRequestInterception(true);
-    page.on('request', req => {
-      const tipo = req.resourceType();
-      if (['image', 'font', 'media'].includes(tipo)) {
-        req.abort();
-      } else {
-        req.continue();
-      }
-    });
+    browser = await criarBrowser();
+    const page = await criarPagina(browser);
 
     await fazerLogin(page);
-    const dados = await coletarDados(page, date);
+    const metricas = await coletarDesempenho(page, date);
+
+    const pedidos      = parseInteiro(metricas.pedidosTotal);
+    const faturamento  = parseMoeda(metricas.faturamento);
+    const cancelamentos= parseInteiro(metricas.cancelamentos);
+    let ticketMedio    = parseMoeda(metricas.ticketMedio);
+    const avaliacao    = parseDecimal(metricas.avaliacaoMedia);
+    if (ticketMedio === 0 && pedidos > 0) ticketMedio = parseFloat((faturamento / pedidos).toFixed(2));
+
+    const resultado = { date_referencia: date, pedidos_total: pedidos, faturamento, ticket_medio: ticketMedio, cancelamentos, avaliacao_media: avaliacao, coletado_em: new Date().toISOString(), _debug_cards: metricas._cards };
 
     await browser.close();
-    log('Scrape concluído com sucesso.');
-    return res.json(dados);
+    log(`Concluído: ${JSON.stringify(resultado)}`);
+    return res.json(resultado);
 
   } catch (err) {
-    log(`ERRO no scrape: ${err.message}`);
+    log(`ERRO: ${err.message}`);
     if (browser) await browser.close().catch(() => {});
-    return res.status(500).json({
-      error: err.message,
-      date,
-      coletado_em: new Date().toISOString(),
-    });
+    return res.status(500).json({ error: err.message, date, coletado_em: new Date().toISOString() });
   }
 });
 
 // ─── Health check ─────────────────────────────────────────────────────────────
-
 app.get('/health', (_, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
-
-// ─── Start ────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
   log(`Scraper iFood rodando na porta ${PORT}`);
-  if (!IFOOD_EMAIL) log('⚠️  ATENÇÃO: IFOOD_EMAIL não definido');
-  if (!IFOOD_SENHA) log('⚠️  ATENÇÃO: IFOOD_SENHA não definido');
+  if (!IFOOD_EMAIL) log('⚠️  IFOOD_EMAIL não definido');
+  if (!IFOOD_SENHA) log('⚠️  IFOOD_SENHA não definido');
 });
