@@ -15,6 +15,11 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // Estado global da sessão em andamento
 let sessao = null;
 
+browser = await puppeteer.launch({
+  headless: 'new',
+  executablePath: '/usr/bin/chromium',
+  args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage','--disable-gpu'],
+});
 // ── /scrape ──────────────────────────────────────────────────────────────────
 app.post('/scrape', async (req, res) => {
   const { date } = req.body;
