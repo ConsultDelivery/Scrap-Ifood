@@ -21,11 +21,8 @@ app.post('/scrape', async (req, res) => {
 
   log(`Iniciando scrape — ${date}`);
   resultado = null;
-
-  // Responde imediatamente — scraping roda em background
   res.json({ ok: true, status: 'iniciado', date });
 
-  // Executa em background
   (async () => {
     let browser;
     try {
@@ -42,7 +39,7 @@ app.post('/scrape', async (req, res) => {
       // 1. Abre o portal
       log('Acessando portal...');
       await page.goto('https://portal.ifood.com.br/login', { waitUntil: 'networkidle2', timeout: 30000 });
-      await sleep(2000);
+      await sleep(3000);
 
       // 2. Clica em "Acessar" se existir
       try {
@@ -57,23 +54,19 @@ app.post('/scrape', async (req, res) => {
         }
       } catch(e) { log('Botão Acessar não encontrado, continuando...'); }
 
-      // 3. Aguarda campo de email
+      // 3. Digita email
       log('Aguardando campo email...');
-      await page.waitForFunction(
-        () => document.querySelector('input') !== null,
-        { timeout: 20000 }
-      );
+      await page.waitForFunction(() => document.querySelector('input') !== null, { timeout: 20000 });
       await sleep(1000);
 
-      const inputs = await page.$$('input');
-      log(`Inputs encontrados: ${inputs.length}`);
-      if (inputs.length === 0) throw new Error('Nenhum input encontrado na página de login');
-
-      await inputs[0].click();
-      await inputs[0].type(EMAIL, { delay: 80 });
+      const inputsEmail = await page.$$('input');
+      log(`Inputs encontrados: ${inputsEmail.length}`);
+      await inputsEmail[0].click({ clickCount: 3 });
+      await inputsEmail[0].type(EMAIL, { delay: 80 });
       await sleep(500);
+      log(`Email digitado: ${EMAIL}`);
 
-      // Clica Continuar (email)
+      // Clica Continuar e aguarda navegação
       await page.waitForFunction(
         () => [...document.querySelectorAll('button')].some(b => b.innerText.includes('Continuar')),
         { timeout: 10000 }
@@ -81,11 +74,18 @@ app.post('/scrape', async (req, res) => {
       const btns1 = await page.$$('button');
       for (const btn of btns1) {
         const txt = await page.evaluate(el => el.innerText, btn);
-        if (txt && txt.includes('Continuar')) { await btn.click(); break; }
+        if (txt && txt.includes('Continuar')) {
+          await Promise.all([
+            page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {}),
+            btn.click()
+          ]);
+          break;
+        }
       }
       await sleep(3000);
+      log(`URL após continuar email: ${page.url()}`);
 
-      // 4. Aguarda campo de senha
+      // 4. Digita senha
       log('Aguardando campo senha...');
       await page.waitForFunction(
         () => document.querySelector('input[type="password"]') !== null,
@@ -96,13 +96,20 @@ app.post('/scrape', async (req, res) => {
       await page.type('input[type="password"]', SENHA, { delay: 80 });
       await sleep(500);
 
-      // Clica Continuar (senha)
+      // Clica Continuar (senha) e aguarda navegação
       const btns2 = await page.$$('button');
       for (const btn of btns2) {
         const txt = await page.evaluate(el => el.innerText, btn);
-        if (txt && txt.includes('Continuar')) { await btn.click(); break; }
+        if (txt && txt.includes('Continuar')) {
+          await Promise.all([
+            page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {}),
+            btn.click()
+          ]);
+          break;
+        }
       }
       await sleep(3000);
+      log(`URL após continuar senha: ${page.url()}`);
 
       // 5. Seleciona E-mail no 2FA
       log('Aguardando tela 2FA...');
@@ -112,10 +119,6 @@ app.post('/scrape', async (req, res) => {
           { timeout: 10000 }
         );
         log('Tela 2FA detectada, selecionando email...');
-        await page.waitForFunction(
-          () => [...document.querySelectorAll('*')].some(el => el.innerText && el.innerText.trim().toLowerCase().includes('e-mail')),
-          { timeout: 8000 }
-        );
         const elementos = await page.$$('label, li, div, span, p');
         for (const el of elementos) {
           const txt = await page.evaluate(e => e.innerText, el);
@@ -129,14 +132,19 @@ app.post('/scrape', async (req, res) => {
         const btns3 = await page.$$('button');
         for (const btn of btns3) {
           const txt = await page.evaluate(el => el.innerText, btn);
-          if (txt && txt.includes('Continuar')) { await btn.click(); break; }
+          if (txt && txt.includes('Continuar')) {
+            await Promise.all([
+              page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {}),
+              btn.click()
+            ]);
+            break;
+          }
         }
+        await sleep(2000);
+        log(`URL após 2FA canal: ${page.url()}`);
       } catch(e) { log('Tela 2FA não apareceu: ' + e.message); }
 
-      await sleep(2000);
       log('Aguardando código 2FA do n8n...');
-
-      // 6. Aguarda o código por até 3 minutos
       let codigoRecebido = null;
       sessao = { resolverCodigo: (cod) => { codigoRecebido = cod; } };
 
@@ -144,7 +152,6 @@ app.post('/scrape', async (req, res) => {
       while (!codigoRecebido && Date.now() - inicio < 180000) {
         await sleep(2000);
       }
-
       sessao = null;
 
       if (!codigoRecebido) {
@@ -155,10 +162,7 @@ app.post('/scrape', async (req, res) => {
 
       // 7. Digita o código 2FA
       log(`Digitando código 2FA: ${codigoRecebido}`);
-      await page.waitForFunction(
-        () => document.querySelector('input') !== null,
-        { timeout: 15000 }
-      );
+      await page.waitForFunction(() => document.querySelector('input') !== null, { timeout: 15000 });
       await sleep(500);
 
       const inputs2fa = await page.$$('input[maxlength="1"]');
@@ -170,18 +174,23 @@ app.post('/scrape', async (req, res) => {
       } else {
         log('Campo único de código detectado');
         const allInputs = await page.$$('input');
-        if (allInputs.length > 0) {
-          await allInputs[0].type(codigoRecebido, { delay: 100 });
-        }
+        if (allInputs.length > 0) await allInputs[0].type(codigoRecebido, { delay: 100 });
       }
 
       await sleep(1000);
       const btns4 = await page.$$('button');
       for (const btn of btns4) {
         const txt = await page.evaluate(el => el.innerText, btn);
-        if (txt && txt.includes('Continuar')) { await btn.click(); break; }
+        if (txt && txt.includes('Continuar')) {
+          await Promise.all([
+            page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => {}),
+            btn.click()
+          ]);
+          break;
+        }
       }
       await sleep(4000);
+      log(`URL após código 2FA: ${page.url()}`);
 
       // 8. Seleciona "Portal do Parceiro" se aparecer
       try {
@@ -226,7 +235,6 @@ app.post('/scrape', async (req, res) => {
   })();
 });
 
-// N8n busca o resultado após enviar o código
 app.get('/resultado', (req, res) => {
   if (!resultado) return res.status(202).json({ status: 'aguardando' });
   const r = resultado;
@@ -234,7 +242,6 @@ app.get('/resultado', (req, res) => {
   return res.json(r);
 });
 
-// Recebe o código 2FA do n8n
 app.post('/codigo', (req, res) => {
   const { codigo } = req.body;
   if (!codigo) return res.status(400).json({ error: '"codigo" obrigatório' });
